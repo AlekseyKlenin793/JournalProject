@@ -1,0 +1,49 @@
+services:
+  db:
+    image: postgres:16
+    container_name: journal_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+
+  bot:
+    build: ./bot
+    container_name: journal_bot
+    depends_on:
+      - db
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      BOT_TOKEN: ${BOT_TOKEN}
+    volumes:
+      - ./bot:/app
+    restart: unless-stopped
+
+  parser:
+    build:
+      context: ./parser
+    depends_on:
+      - db
+    environment:
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_NAME: ${DB_NAME_PARSER}
+    volumes:
+      - ./parser:/app
+    profiles: [ "parser" ]
+    command: [ "sleep", "infinity" ]
+
+volumes:
+  pgdata:
