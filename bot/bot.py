@@ -4,6 +4,7 @@ import telebot
 import logging
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 # настройка логирования
 logging.basicConfig(
@@ -31,41 +32,20 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    user_id = message.from_user.id
-    logging.info(f"Пользователь {user_id} начал взаимодействие с ботом.")
+    user_first_name = message.from_user.first_name or "Пользователь"
+    logging.info(f"Пользователь {message.from_user.id} начал взаимодействие с ботом.")
+    
     welcome_text = (
-        "👋 *Добро пожаловать!* Я бот для поиска информации о научных журналах и направлениях.\n\n"
-        "📌 *Введите один из следующих запросов:*\n"
-        " - ISSN (например, 1234-5678)\n"
-        " - Код направления (например, 5.3.3 или 12.00.01)\n"
-        " - Название журнала или направления (например, Материаловедение)"
+        f"👋 Привет, <b>{user_first_name}</b>!\n\n"
+        "Этот бот помогает находить <b>научные журналы</b> и <b>направления</b> из базы данных.\n"
+        "Вы можете искать по <b>ISSN</b>, <b>коду направления</b> или <b>названию</b>.\n\n"
+        "<b>Примеры использования:</b>\n"
+        "- Отправьте <code>1234-5678</code>, чтобы найти журнал по ISSN.\n"
+        "- Отправьте <code>5.3.3</code>, чтобы получить список журналов по коду направления.\n"
+        "- Отправьте <code>Физика</code>, чтобы найти журналы или направления по названию."
     )
-    bot.reply_to(message, welcome_text, parse_mode="Markdown")
-
-
-@bot.message_handler(commands=['help'])
-def send_help(message):
-    help_text = (
-        "ℹ️ *Справка и помощь*\n\n"
-        "Я бот для поиска информации о научных журналах и направлениях. "
-        "Вот список доступных команд:\n\n"
-        "📌 *Основные команды:*\n"
-        "  - `/start` — Начать работу с ботом и получить приветственное сообщение.\n"
-        "  - `/help` — Получить справку о командах и примеры использования.\n\n"
-        "📚 *Поиск информации:*\n"
-        "  - `ISSN` (например, `1234-5678`) — Найти журнал по ISSN.\n"
-        "  - Код направления (например, `5.3.3` или `12.00.01`) — Показать журналы по указанному коду.\n"
-        "  - Название (например, `Физическая культура`) — Поиск по названию журнала или научного направления.\n\n"
-        "🎯 *Дополнительные команды:*\n"
-        "  - `/show_top N` — Показать только первые N журналов из последнего запроса (например, `/show_top 5`).\n\n"
-        "🛠️ *Примеры использования:*\n"
-        "  1️⃣ Отправьте `5.3.3` — я покажу журналы по этому направлению.\n"
-        "  2️⃣ Отправьте часть названия журнала или направления, например, `Физическая культура`, чтобы увидеть совпадения.\n"
-        "  3️⃣ Используйте `/show_top 10`, чтобы посмотреть топ-10 из найденного списка.\n\n"
-        "❓ Если у вас есть вопросы или предложения, напишите администратору."
-    )
-    bot.reply_to(message, help_text, parse_mode="Markdown")
-
+    
+    bot.reply_to(message, welcome_text, parse_mode="HTML")
 
 # обработка всех текстовых запросов
 @bot.message_handler(func=lambda message: True)
@@ -73,14 +53,6 @@ def handle_query(message):
     query = message.text.strip()
     user_id = message.from_user.id
     logging.info(f"PID {os.getpid()} — Получен запрос от пользователя {message.from_user.id}: {message.text}")
-
-    if query.startswith("/show_top"):
-        try:
-            n = int(query.split()[1])
-            show_top_journals(message, user_id, n)
-        except (IndexError, ValueError):
-            bot.reply_to(message, "❌ Введите число после команды, например: /show_top 5")
-        return
 
     # определяем тип запроса
     issn_pattern = r"^\d{4}-\d{3}[0-9X]$"  # ISSN ?
@@ -216,15 +188,29 @@ def send_journal_info(message, rows):
         bot.reply_to(message, response, parse_mode="Markdown")
 
 
-# отправка информации о наличии направления в разных журналах
 def send_journals_list(message, rows):
     user_id = message.from_user.id
+    user_journal_data[user_id] = rows  # сохраняем список журналов
 
-    # список журналов для пользователя
-    user_journal_data[user_id] = rows
+    # отправляем первую страницу
+    send_journals_page(message.chat.id, user_id, 0)
 
-    response = "📚 *Список найденных журналов:*\n\n"
-    for i, row in enumerate(rows, 1):
+def send_journals_page(chat_id, user_id, page, message_id=None):
+    journals = user_journal_data.get(user_id, [])
+    if not journals:
+        bot.send_message(chat_id, "❌ Нет сохранённых данных. Сначала выполните поиск.")
+        return
+
+    per_page = 5
+    total_pages = (len(journals) + per_page - 1) // per_page
+    page = max(0, min(page, total_pages - 1))  # защита от выхода за пределы
+
+    start = page * per_page
+    end = start + per_page
+    current_page_items = journals[start:end]
+
+    response = f"📚 *Список найденных журналов (стр. {page+1}/{total_pages}):*\n\n"
+    for i, row in enumerate(current_page_items, start+1):
         journal_name = escape_markdown(row[0]) or "Название не указано"
         issn = escape_markdown(row[1]) or "Не указано"
         price = f"{row[2]}" if row[2] else "0"
@@ -237,20 +223,31 @@ def send_journals_list(message, rows):
             f"   🏷️ *Категория:* {category}\n\n"
         )
 
-        # прерываем, если длина ответа близка к лимиту телеги
-        if len(response) > 3500:  # оставляем запас для дополнительного текста
-            response += "⚠️ Список слишком длинный, отображены только первые журналы.\n"
-            break
+    # кнопки пагинации
+    markup = InlineKeyboardMarkup()
+    buttons = []
 
-    # подсказываем команду /show_top
-    response += (
-        "\n💡 Если хотите увидеть только определённое количество журналов, введите `/show_top N`, "
-        "где N — число журналов, которые нужно отобразить."
-    )
+    if page > 0:
+        buttons.append(InlineKeyboardButton("Назад", callback_data=f"page_{page-1}"))
+    buttons.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
+    if page < total_pages - 1:
+        buttons.append(InlineKeyboardButton("Вперёд", callback_data=f"page_{page+1}"))
 
-    # разделяем текст на части и отправляем
-    send_long_message(message, response)
+    markup.row(*buttons)
 
+    # кнопка экспорта списка
+    markup.add(InlineKeyboardButton("📄 Экспорт в TXT", callback_data="export_txt"))
+
+    if message_id:  # если редактируем
+        bot.edit_message_text(
+            response,
+            chat_id=chat_id,
+            message_id=message_id,
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+    else:  # если создаём новое
+        bot.send_message(chat_id, response, parse_mode="Markdown", reply_markup=markup)
 
 # экранирование спецсимволов Markdown для корректного отображения текста. Если текст пустой или None, возвращает пустую строку.
 def escape_markdown(text):
@@ -261,53 +258,53 @@ def escape_markdown(text):
     return re.sub(f"([{escape_chars}])", r'\\\1', text)
 
 
-# разбивка длинных сообщений на части, учитывая ограничение Telegram в 4096 байт.
-def send_long_message(message, text, parse_mode="Markdown"):
-    max_length = 4096
-    while len(text) > max_length:
-        split_index = text[:max_length].rfind("\n")
-        if split_index == -1:
-            split_index = max_length
-        part = text[:split_index]
-        text = text[split_index:].strip()
+@bot.callback_query_handler(func=lambda call: call.data.startswith("page_") or call.data == "noop")
+def callback_page(call: CallbackQuery):
+    user_id = call.from_user.id
 
-        bot.reply_to(message, part, parse_mode=parse_mode)
-    if text:
-        bot.reply_to(message, text, parse_mode=parse_mode)
-
-
-def show_top_journals(message, user_id, n):
-    if user_id not in user_journal_data:
-        bot.reply_to(message, "❌ Вы ещё не запрашивали список журналов. Сначала выполните поиск.")
+    if call.data == "noop":
+        bot.answer_callback_query(call.id)  # просто убираем "часики"
         return
 
-    journals = user_journal_data[user_id]
-    if n > len(journals):
-        bot.reply_to(message, f"⚠️ В вашем списке всего {len(journals)} журналов.")
-        n = len(journals)
+    page = int(call.data.split("_")[1])
+    send_journals_page(call.message.chat.id, user_id, page, call.message.message_id)
+    bot.answer_callback_query(call.id)
 
-    response = f"📚 *Топ {n} журналов:*\n\n"
-    for i, row in enumerate(journals[:n], 1):
-        journal_name = escape_markdown(row[0]) or "Название не указано"
-        issn = escape_markdown(row[1]) or "Не указано"
+
+@bot.callback_query_handler(func=lambda call: call.data == "export_txt")
+def callback_export(call: CallbackQuery):
+    user_id = call.from_user.id
+    journals = user_journal_data.get(user_id, [])
+
+    if not journals:
+        bot.answer_callback_query(call.id, "❌ Нет данных для экспорта.")
+        return
+
+    # формируем текст без эмодзи
+    export_text = "Результаты поиска журналов:\n\n"
+    for i, row in enumerate(journals, start=1):
+        journal_name = row[0] or "Название не указано"
+        issn = row[1] or "Не указано"
         price = f"{row[2]}" if row[2] else "0"
-        category = escape_markdown(row[3]) if row[3] else "-"
+        category = row[3] if row[3] else "-"
 
-        response += (
-            f"{i}. 📰 *{journal_name}*\n"
-            f"   🔢 *ISSN:* {issn}\n"
-            f"   💰 *Цена:* {price}\n"
-            f"   🏷️ *Категория:* {category}\n\n"
+        export_text += (
+            f"{i}. {journal_name}\n"
+            f"   ISSN: {issn}\n"
+            f"   Цена: {price}\n"
+            f"   Категория: {category}\n\n"
         )
 
-        # если текст уже близок к максимальной длине, отправляем его и начинаем новый блок
-        if len(response) > 3500:  # с запасом оставляем пространство для Telegram Markdown
-            send_long_message(message, response)
-            response = ""  # очищаем текущий блок
+    # создаём временный файл
+    filename = "results.txt"
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(export_text)
 
-    # отправляем оставшийся текст
-    if response:
-        send_long_message(message, response)
+    # отправляем файл пользователю
+    with open(filename, "rb") as f:
+        bot.send_document(call.message.chat.id, f, visible_file_name=filename)
+
+    bot.answer_callback_query(call.id, "✅ Файл сформирован и отправлен.")
 
 
 if __name__ == "__main__":

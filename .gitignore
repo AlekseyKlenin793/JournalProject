@@ -11,3 +11,4 @@ pgdata/
 .DS_Store
 .idea/
 parser/
+*.txt
