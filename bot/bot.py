@@ -191,10 +191,36 @@ def send_journal_info(message, rows):
 
 def send_journals_list(message, rows):
     user_id = message.from_user.id
-    user_journal_data[user_id] = rows  # сохраняем список журналов
 
-    # отправляем первую страницу
+    unique = []
+    seen = set()
+
+    for row in rows:
+        issn = row[1] if len(row) > 1 else None
+        if issn and str(issn).strip():
+            key = str(issn).strip().lower()
+        else:
+            key = str(row[0]).strip().lower() if row[0] else None
+
+        if key in seen:
+            continue
+        seen.add(key)
+
+        minimal_row = (row[0], row[1] if len(row) > 1 else None,
+                       row[2] if len(row) > 2 else None,
+                       row[3] if len(row) > 3 else None)
+        unique.append(minimal_row)
+
+    if not unique:
+        bot.reply_to(message, "Ничего не найдено после обработки результатов.")
+        return
+
+    # сохраняем уникальные записи для пользователя
+    user_journal_data[user_id] = unique
+
+    # отправляем первую страницу (старт с 0)
     send_journals_page(message.chat.id, user_id, 0)
+
 
 def send_journals_page(chat_id, user_id, page, message_id=None):
     journals = user_journal_data.get(user_id, [])
@@ -247,6 +273,7 @@ def send_journals_page(chat_id, user_id, page, message_id=None):
         )
     else:
         bot.send_message(chat_id, response, parse_mode="Markdown", reply_markup=markup)
+
 
 # экранирование спецсимволов Markdown для корректного отображения текста. Если текст пустой или None, возвращает пустую строку.
 def escape_markdown(text):
