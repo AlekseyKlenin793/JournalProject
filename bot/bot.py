@@ -1,12 +1,13 @@
 import re
 import os
+import io
 import telebot
 import logging
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# настройка логирования
+# Настройка логирования
 logging.basicConfig(
     filename="bot.log",
     level=logging.INFO,
@@ -223,22 +224,20 @@ def send_journals_page(chat_id, user_id, page, message_id=None):
             f"   🏷️ *Категория:* {category}\n\n"
         )
 
-    # кнопки пагинации
     markup = InlineKeyboardMarkup()
     buttons = []
 
     if page > 0:
-        buttons.append(InlineKeyboardButton("Назад", callback_data=f"page_{page-1}"))
-    buttons.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
+        buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"page_{page-1}"))
+    buttons.append(InlineKeyboardButton(f" {page+1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1:
-        buttons.append(InlineKeyboardButton("Вперёд", callback_data=f"page_{page+1}"))
+        buttons.append(InlineKeyboardButton("Вперёд ➡️", callback_data=f"page_{page+1}"))
 
     markup.row(*buttons)
 
-    # кнопка экспорта списка
     markup.add(InlineKeyboardButton("📄 Экспорт в TXT", callback_data="export_txt"))
 
-    if message_id:  # если редактируем
+    if message_id: 
         bot.edit_message_text(
             response,
             chat_id=chat_id,
@@ -246,7 +245,7 @@ def send_journals_page(chat_id, user_id, page, message_id=None):
             parse_mode="Markdown",
             reply_markup=markup
         )
-    else:  # если создаём новое
+    else:
         bot.send_message(chat_id, response, parse_mode="Markdown", reply_markup=markup)
 
 # экранирование спецсимволов Markdown для корректного отображения текста. Если текст пустой или None, возвращает пустую строку.
@@ -263,7 +262,7 @@ def callback_page(call: CallbackQuery):
     user_id = call.from_user.id
 
     if call.data == "noop":
-        bot.answer_callback_query(call.id)  # просто убираем "часики"
+        bot.answer_callback_query(call.id)
         return
 
     page = int(call.data.split("_")[1])
@@ -280,7 +279,6 @@ def callback_export(call: CallbackQuery):
         bot.answer_callback_query(call.id, "❌ Нет данных для экспорта.")
         return
 
-    # формируем текст без эмодзи
     export_text = "Результаты поиска журналов:\n\n"
     for i, row in enumerate(journals, start=1):
         journal_name = row[0] or "Название не указано"
@@ -295,14 +293,10 @@ def callback_export(call: CallbackQuery):
             f"   Категория: {category}\n\n"
         )
 
-    # создаём временный файл
-    filename = "results.txt"
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(export_text)
+    file_buffer = io.BytesIO(export_text.encode("utf-8"))
+    file_buffer.name = "results.txt"
 
-    # отправляем файл пользователю
-    with open(filename, "rb") as f:
-        bot.send_document(call.message.chat.id, f, visible_file_name=filename)
+    bot.send_document(call.message.chat.id, file_buffer)
 
     bot.answer_callback_query(call.id, "✅ Файл сформирован и отправлен.")
 
