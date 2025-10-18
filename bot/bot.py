@@ -1,13 +1,14 @@
-import re
 import os
+import re
 import io
-import telebot
 import logging
-from sqlalchemy import create_engine, text
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from sqlalchemy import create_engine, Column, Integer, String, Text, Numeric, Date, ForeignKey, TIMESTAMP, or_
+from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.exc import SQLAlchemyError
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# Настройка логирования
+
 logging.basicConfig(
     filename="bot.log",
     level=logging.INFO,
@@ -15,7 +16,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-# Получение чувствительных данных из переменных окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
@@ -23,312 +23,326 @@ DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT")
 DB_NAME = os.getenv("DB_NAME")
 
-# для сохранения запрошенного пользователем списка журналов
-user_journal_data = {}
-
 DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 engine = create_engine(DATABASE_URL)
+Session = sessionmaker(bind=engine)
+Base = declarative_base()
+
 bot = telebot.TeleBot(BOT_TOKEN)
+user_journal_data = {}
+
+class Journal(Base):
+    __tablename__ = "journals"
+    id = Column(Integer, primary_key=True)
+    journal_name = Column(String(1000), nullable=False)
+    issn = Column(String(20), nullable=False)
+    inclusion_date = Column(Date)
+    h_index = Column(Numeric)
+    citation_index = Column(Numeric)
+    publication_time_value = Column(Numeric)
+    publication_time_unit = Column(String(20))
+    publication_price = Column(Numeric)
+    publication_currency = Column(String(10))
+    url = Column(Text)
+    final_category = Column(String(100))
+    timestamp = Column(TIMESTAMP)
+    white_list_level_2023 = Column(String(100))
+    white_list_level_2025 = Column(String(100))
+    directions = relationship("Direction", back_populates="journal")
+
+class Direction(Base):
+    __tablename__ = "directions"
+    id = Column(Integer, primary_key=True)
+    journal_id = Column(Integer, ForeignKey("journals.id"))
+    direction_number = Column(String(100))
+    scientific_direction = Column(Text)
+    journal = relationship("Journal", back_populates="directions")
 
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_first_name = message.from_user.first_name or "Пользователь"
-    logging.info(f"Пользователь {message.from_user.id} начал взаимодействие с ботом.")
-    
-    welcome_text = (
+    bot.reply_to(
+        message,
         f"👋 Привет, <b>{user_first_name}</b>!\n\n"
-        "Этот бот помогает находить <b>научные журналы</b> и <b>направления</b> из базы данных.\n"
-        "Вы можете искать по <b>ISSN</b>, <b>коду направления</b> или <b>названию</b>.\n\n"
-        "<b>Примеры использования:</b>\n"
-        "- Отправьте <code>1234-5678</code>, чтобы найти журнал по ISSN.\n"
-        "- Отправьте <code>5.3.3</code>, чтобы получить список журналов по коду направления.\n"
-        "- Отправьте <code>Физика</code>, чтобы найти журналы или направления по названию."
+        "Этот бот помогает находить <b>научные журналы</b> и <b>направления</b>.\n\n"
+        "<b>Можно искать по:</b>\n"
+        "- ISSN (например, <code>1234-5678</code>)\n"
+        "- коду направления (например, <code>5.3.3</code>)\n"
+        "- названию (например, <code>Физика</code>)",
+        parse_mode="HTML"
     )
-    
-    bot.reply_to(message, welcome_text, parse_mode="HTML")
 
-# обработка всех текстовых запросов
-@bot.message_handler(func=lambda message: True)
+
+@bot.message_handler(func=lambda msg: True)
 def handle_query(message):
     query = message.text.strip()
-    user_id = message.from_user.id
-    logging.info(f"PID {os.getpid()} — Получен запрос от пользователя {message.from_user.id}: {message.text}")
+    logging.info(f"Запрос от пользователя {message.from_user.id}: {query}")
 
-    # определяем тип запроса
-    issn_pattern = r"^\d{4}-\d{3}[0-9X]$"  # ISSN ?
-    direction_code_pattern = r"^\d+\.\d+\.\d+$"  # код направления ?
+    if len(query) < 3:
+        bot.reply_to(message, "⚠️ Введите хотя бы 3 символа для поиска.")
+        return
+
+    issn_pattern = r"^\d{4}-\d{3}[0-9Xx]$"
+    direction_code_pattern = r"^\d+\.\d+\.\d+$"
 
     if re.match(issn_pattern, query):
-        search_by_issn(message, query)  # поиск по ISSN
+        search_by_issn(message, query)
     elif re.match(direction_code_pattern, query):
-        search_by_direction_code(message, query)  # поиск по коду направления
+        search_by_direction_code(message, query)
     else:
-        search_by_name(message, query)  # поиск по названию журнала или направления
+        search_by_keyword(message, query)
 
 
-# поиск по ISSN
 def search_by_issn(message, query):
-    try:
-        with engine.connect() as connection:
-            sql_query = text("""
-                SELECT journal_name, issn, direction_number, scientific_directions, inclusion_date,
-                       h_index, citation_index, publication_time, publication_price, white_list_level,
-                       url, final_category
-                FROM directions
-                WHERE issn = :query
-            """)
-            result = connection.execute(sql_query, {"query": query})
-            rows = result.fetchall()
-            if rows:
-                send_journal_info(message, rows)
+    with Session() as session:
+        try:
+            journals = session.query(Journal).filter(Journal.issn == query).all()
+            if journals:
+                send_journal_info(message, journals)
             else:
                 bot.reply_to(message, "❌ Журнал с таким ISSN не найден.")
-    except SQLAlchemyError as e:
-        logging.error(f"Ошибка поиска по ISSN: {e}")
-        bot.reply_to(message, "❌ Ошибка при выполнении запроса.")
+        except SQLAlchemyError as e:
+            logging.error(f"Ошибка при поиске ISSN: {e}")
+            bot.reply_to(message, "❌ Ошибка при выполнении запроса.")
 
 
-# поиск по коду направления
 def search_by_direction_code(message, query):
-    try:
-        with engine.connect() as connection:
-            sql_query = text("""
-                SELECT journal_name, issn, publication_price, final_category
-                FROM directions
-                WHERE direction_number = :query
-            """)
-            result = connection.execute(sql_query, {"query": query})
-            rows = result.fetchall()
-            if rows:
-                send_journals_list(message, rows)
+    with Session() as session:
+        try:
+            results = (
+                session.query(Journal.journal_name, Journal.issn, Journal.publication_price, Journal.final_category)
+                .join(Direction)
+                .filter(Direction.direction_number == query)
+                .all()
+            )
+            if results:
+                send_journals_list(message, results)
             else:
                 bot.reply_to(message, "❌ Журналы с таким кодом направления не найдены.")
-    except SQLAlchemyError as e:
-        logging.error(f"Ошибка поиска по коду направления: {e}")
-        bot.reply_to(message, "❌ Ошибка при выполнении запроса.")
+        except SQLAlchemyError as e:
+            logging.error(f"Ошибка при поиске по коду направления: {e}")
+            bot.reply_to(message, "❌ Ошибка при выполнении запроса.")
 
 
-# поиск по названию журнала или направлению
-def search_by_name(message, query):
-    """
-    Поиск журналов по названию и направлениям.
-    """
-    try:
-        with engine.connect() as connection:
-            journal_query = text("""
-                SELECT journal_name, issn, direction_number, scientific_directions, inclusion_date,
-                       h_index, citation_index, publication_time, publication_price, white_list_level,
-                       url, final_category
-                FROM directions
-                WHERE journal_name ILIKE :query
-            """)
-            result_journal = connection.execute(journal_query, {"query": query})
-            journal_rows = result_journal.fetchall()
+def search_by_keyword(message, query, max_results=50):
+    with Session() as session:
+        try:
+            # Проверяем точное совпадение по названию журнала
+            exact_journal = (
+                session.query(Journal)
+                .filter(Journal.journal_name.ilike(query))
+                .all()
+            )
 
-            if journal_rows:
-                send_journal_info(message, journal_rows)
+            # Проверяем точное совпадение по названию направления
+            exact_direction = (
+                session.query(
+                    Journal.journal_name,
+                    Journal.issn,
+                    Journal.publication_price,
+                    Journal.final_category
+                )
+                .join(Direction)
+                .filter(Direction.scientific_direction.ilike(query))
+                .all()
+            )
+
+            # Если найден ровно один журнал — показываем карточку
+            if len(exact_journal) == 1:
+                send_journal_info(message, exact_journal)
                 return
 
-            direction_query = text("""
-                SELECT journal_name, issn, publication_price, final_category
-                FROM directions
-                WHERE scientific_directions ILIKE :query
-            """)
-            result_direction = connection.execute(direction_query, {"query": f"%{query}%"})
-            direction_rows = result_direction.fetchall()
+            # Если найдено одно или несколько журналов по направлению — показываем список
+            if exact_direction:
+                send_journals_list(message, exact_direction)
+                return
 
-            if direction_rows:
-                send_journals_list(message, direction_rows)
-            else:
+            # Поиск по подстроке для всех журналов и направлений
+            results = (
+                session.query(
+                    Journal.journal_name,
+                    Journal.issn,
+                    Journal.publication_price,
+                    Journal.final_category
+                )
+                .join(Direction, isouter=True)
+                .filter(
+                    or_(
+                        Journal.journal_name.ilike(f"%{query}%"),
+                        Direction.scientific_direction.ilike(f"%{query}%")
+                    )
+                )
+                .all()
+            )
+
+            if not results:
                 bot.reply_to(message, "❌ Ничего не найдено по вашему запросу.")
-    except SQLAlchemyError as e:
-        logging.error(f"Ошибка поиска по названию: {e}")
-        bot.reply_to(message, "❌ Ошибка при выполнении запроса.")
-    except Exception as e:
-        logging.error(f"Непредвиденная ошибка: {e}")
-        bot.reply_to(message, "❌ Произошла ошибка. Попробуйте позже.")
+                return
+
+            # Убираем дубликаты по ISSN
+            unique = {r[1]: r for r in results}
+            results = list(unique.values())
+
+            # Если один журнал, показываем карточку
+            if len(results) == 1:
+                journal = session.query(Journal).filter(Journal.issn == results[0][1]).all()
+                send_journal_info(message, journal)
+                return
+
+            # Если несколько — проверяем длину и ограничиваем вывод
+            if len(results) > max_results:
+                limited_results = results[:max_results]
+                send_journals_list(message, limited_results)
+                bot.reply_to(
+                    message,
+                    f"⚠️ Точных совпадений не найдено, вывод ограничен {max_results} результатами. "
+                    "Пожалуйста, уточните запрос."
+                )
+            else:
+                send_journals_list(message, results)
+
+        except SQLAlchemyError as e:
+            logging.error(f"Ошибка при поиске по названию: {e}")
+            bot.reply_to(message, "❌ Ошибка при выполнении запроса.")
 
 
-# отправка информации о конкретном журнале
-def send_journal_info(message, rows):
-    journal_info = {}
-    for row in rows:
-        journal_name = row[0]
-        if journal_name not in journal_info:
-            journal_info[journal_name] = {
-                "issn": row[1],
-                "directions": [],
-                "inclusion_date": row[4],
-                "h_index": row[5] or 0,
-                "citation_index": row[6] or 0,
-                "publication_time": row[7] or "Не указано",
-                "publication_price": row[8] or 0,
-                "white_list_level": row[9] or "Не указано",
-                "url": row[10],
-                "final_category": row[11] or "Не указано",
-            }
-        direction = f"• {row[2] or 'Не указано'} — {row[3] or 'Не указано'}"
-        journal_info[journal_name]["directions"].append(direction)
+def send_journal_info(message, journals):
+    for j in journals:
+        directions = "\n".join(
+            f"• {d.direction_number or '—'} — {d.scientific_direction or '—'}"
+            for d in getattr(j, "directions", [])
+        ) or "Нет данных"
 
-    for journal_name, info in journal_info.items():
-        directions_formatted = "\n".join(info["directions"])
         response = (
-            f"📚 *Название журнала:* {journal_name}\n"
-            f"🔢 *ISSN:* {info['issn']}\n"
-            f"📖 *Направления:*\n{directions_formatted}\n"
-            f"📅 *Дата включения:* {info['inclusion_date']}\n"
-            f"📈 *Индекс Хирша:* {info['h_index']}\n"
-            f"🔗 *Индекс цитирования:* {info['citation_index']}\n"
-            f"⏳ *Время публикации:* {info['publication_time']}\n"
-            f"💰 *Цена публикации:* {info['publication_price']}\n"
-            f"🏅 *Уровень в «Белом списке»:* {info['white_list_level']}\n"
-            f"🔖 *Итоговая категория:* {info['final_category']}\n"
-            f"🌐 *Ссылка:* {info['url']}"
+            f"📚 *Название:* {getattr(j, 'journal_name', '—')}\n"
+            f"🔢 *ISSN:* {getattr(j, 'issn', '—')}\n"
+            f"📖 *Направления:*\n{directions}\n"
+            f"📅 *Дата включения:* {getattr(j, 'inclusion_date', '—') or '—'}\n"
+            f"📈 *Индекс Хирша:* {format_value(getattr(j, 'h_index', 0))}\n"
+            f"🔗 *Индекс цитирования:* {format_value(getattr(j, 'citation_index', 0))}\n"
+            f"⏳ *Время публикации:* {format_value(getattr(j, 'publication_time_value', '-'))} "
+            f"{format_value(getattr(j, 'publication_time_unit', ''), 'unit')}\n"
+            f"💰 *Цена:* {format_value((getattr(j, 'publication_price', None), getattr(j, 'publication_currency', '')), 'currency')}\n"
+            f"🏅 *Белый список 2023:* {format_value(getattr(j, 'white_list_level_2023', '—'))}\n"
+            f"🏅 *Белый список 2025:* {format_value(getattr(j, 'white_list_level_2025', '—'))}\n"
+            f"🔖 *Категория:* {getattr(j, 'final_category', '—') or '—'}\n"
+            f"🌐 *Ссылка:* {getattr(j, 'url', '-') or '-'}"
         )
         bot.reply_to(message, response, parse_mode="Markdown")
 
 
 def send_journals_list(message, rows):
     user_id = message.from_user.id
-
-    unique = []
-    seen = set()
-
-    for row in rows:
-        issn = row[1] if len(row) > 1 else None
-        if issn and str(issn).strip():
-            key = str(issn).strip().lower()
-        else:
-            key = str(row[0]).strip().lower() if row[0] else None
-
-        if key in seen:
-            continue
-        seen.add(key)
-
-        minimal_row = (row[0], row[1] if len(row) > 1 else None,
-                       row[2] if len(row) > 2 else None,
-                       row[3] if len(row) > 3 else None)
-        unique.append(minimal_row)
-
-    if not unique:
-        bot.reply_to(message, "Ничего не найдено после обработки результатов.")
-        return
-
-    # сохраняем уникальные записи для пользователя
-    user_journal_data[user_id] = unique
-
-    # отправляем первую страницу (старт с 0)
+    user_journal_data[user_id] = rows
     send_journals_page(message.chat.id, user_id, 0)
 
 
 def send_journals_page(chat_id, user_id, page, message_id=None):
     journals = user_journal_data.get(user_id, [])
     if not journals:
-        bot.send_message(chat_id, "❌ Нет сохранённых данных. Сначала выполните поиск.")
+        bot.send_message(chat_id, "❌ Нет сохранённых данных.")
         return
 
     per_page = 5
-    total_pages = (len(journals) + per_page - 1) // per_page
-    page = max(0, min(page, total_pages - 1))  # защита от выхода за пределы
+    total_pages = max(1, (len(journals) + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    start, end = page * per_page, page * per_page + per_page
 
-    start = page * per_page
-    end = start + per_page
-    current_page_items = journals[start:end]
-
-    response = f"📚 *Список найденных журналов (стр. {page+1}/{total_pages}):*\n\n"
-    for i, row in enumerate(current_page_items, start+1):
-        journal_name = escape_markdown(row[0]) or "Название не указано"
-        issn = escape_markdown(row[1]) or "Не указано"
-        price = f"{row[2]}" if row[2] else "0"
-        category = escape_markdown(row[3]) if row[3] else "-"
+    response = f"📚 *Журналы (стр. {page+1}/{total_pages}):*\n\n"
+    for i, row in enumerate(journals[start:end], start=start + 1):
+        # Цена
+        price = row[2]
+        currency = row[3] or ""
+        if price is None:
+            price_str = f"- {currency}" if currency else "-"
+        else:
+            price_val = int(price) if float(price) == int(price) else round(float(price), 2)
+            price_str = f"{price_val} {currency}".strip()
 
         response += (
-            f"{i}. 📰 *{journal_name}*\n"
-            f"   🔢 *ISSN:* {issn}\n"
-            f"   💰 *Цена:* {price}\n"
-            f"   🏷️ *Категория:* {category}\n\n"
+            f"{i}. 📰 *{row[0]}*\n"
+            f"   🔢 ISSN: {row[1]}\n"
+            f"   💰 Цена: {price_str}\n"
+            f"   🏷️ Категория: {row[3] or '-'}\n\n"
         )
 
     markup = InlineKeyboardMarkup()
-    buttons = []
-
     if page > 0:
-        buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"page_{page-1}"))
-    buttons.append(InlineKeyboardButton(f" {page+1}/{total_pages}", callback_data="noop"))
+        markup.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"page_{page-1}"))
     if page < total_pages - 1:
-        buttons.append(InlineKeyboardButton("Вперёд ➡️", callback_data=f"page_{page+1}"))
-
-    markup.row(*buttons)
-
+        markup.add(InlineKeyboardButton("Вперёд ➡️", callback_data=f"page_{page+1}"))
     markup.add(InlineKeyboardButton("📄 Экспорт в TXT", callback_data="export_txt"))
 
-    if message_id: 
-        bot.edit_message_text(
-            response,
-            chat_id=chat_id,
-            message_id=message_id,
-            parse_mode="Markdown",
-            reply_markup=markup
-        )
+    if message_id:
+        bot.edit_message_text(response, chat_id=chat_id, message_id=message_id, parse_mode="Markdown", reply_markup=markup)
     else:
         bot.send_message(chat_id, response, parse_mode="Markdown", reply_markup=markup)
 
 
-# экранирование спецсимволов Markdown для корректного отображения текста. Если текст пустой или None, возвращает пустую строку.
-def escape_markdown(text):
-    if not text:
-        return ""
-    # Telegram Markdown v2 требует экранирования следующих символов
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return re.sub(f"([{escape_chars}])", r'\\\1', text)
+def format_value(val, val_type="num", precision=3, zero_is_none=False):
+
+    unit_map = {
+        "weeks": "недель",
+        "week": "неделя",
+        "days": "дней",
+        "day": "день",
+        "months": "месяцев",
+        "month": "месяц",
+        "years": "лет",
+        "year": "год"
+    }
+
+    if val_type == "num":
+        try:
+            val = float(val)
+            if zero_is_none and val == 0:
+                return "—"
+            return int(val) if val == int(val) else round(val, precision)
+        except:
+            return "—"
+    elif val_type == "currency":
+        price, currency = val
+        try:
+            price = float(price)
+            if price == 0 or price is None:
+                return currency or "—"
+            price = int(price) if price == int(price) else round(price, precision)
+            return f"{price} {currency}".strip()
+        except:
+            return currency or "—"
+    elif val_type == "unit":
+        return unit_map.get((str(val or "")).lower(), val or "")
+    return val or "—"
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("page_") or call.data == "noop")
-def callback_page(call: CallbackQuery):
-    user_id = call.from_user.id
-
+def callback_page(call):
     if call.data == "noop":
         bot.answer_callback_query(call.id)
         return
-
     page = int(call.data.split("_")[1])
-    send_journals_page(call.message.chat.id, user_id, page, call.message.message_id)
+    send_journals_page(call.message.chat.id, call.from_user.id, page, call.message.message_id)
     bot.answer_callback_query(call.id)
 
-
 @bot.callback_query_handler(func=lambda call: call.data == "export_txt")
-def callback_export(call: CallbackQuery):
+def callback_export(call):
     user_id = call.from_user.id
     journals = user_journal_data.get(user_id, [])
-
     if not journals:
         bot.answer_callback_query(call.id, "❌ Нет данных для экспорта.")
         return
 
-    export_text = "Результаты поиска журналов:\n\n"
+    text_out = "Результаты поиска:\n\n"
     for i, row in enumerate(journals, start=1):
-        journal_name = row[0] or "Название не указано"
-        issn = row[1] or "Не указано"
-        price = f"{row[2]}" if row[2] else "0"
-        category = row[3] if row[3] else "-"
+        text_out += f"{i}. {row[0]} — {row[1]} ({row[3]})\n"
 
-        export_text += (
-            f"{i}. {journal_name}\n"
-            f"   ISSN: {issn}\n"
-            f"   Цена: {price}\n"
-            f"   Категория: {category}\n\n"
-        )
-
-    file_buffer = io.BytesIO(export_text.encode("utf-8"))
-    file_buffer.name = "results.txt"
-
-    bot.send_document(call.message.chat.id, file_buffer)
-
-    bot.answer_callback_query(call.id, "✅ Файл сформирован и отправлен.")
-
+    buffer = io.BytesIO(text_out.encode("utf-8"))
+    buffer.name = "results.txt"
+    bot.send_document(call.message.chat.id, buffer)
+    bot.answer_callback_query(call.id, "✅ Файл отправлен.")
 
 if __name__ == "__main__":
     logging.info("Бот запущен и готов к работе.")
     print("Бот запущен...")
-    bot.polling()
+    bot.polling(none_stop=True)
