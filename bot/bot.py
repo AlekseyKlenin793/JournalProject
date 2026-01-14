@@ -40,18 +40,29 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    user_id = message.from_user.id
     user_first_name = message.from_user.first_name or "Пользователь"
-    bot.reply_to(
-        message,
+
+    # -------------------- СБРОС СОСТОЯНИЯ --------------------
+    user_search_history.pop(user_id, None)
+    user_filters.pop(user_id, None)
+    user_journal_data.pop(user_id, None)
+    user_journal_base.pop(user_id, None)
+    user_journal_data.pop(f"limit_warning_{user_id}", None)
+
+    # -------------------- ПРИВЕТСТВЕННОЕ СООБЩЕНИЕ --------------------
+    text = (
         f"👋 Привет, <b>{user_first_name}</b>!\n\n"
         "Этот бот помогает находить <b>научные журналы</b> и <b>направления</b>.\n\n"
         "<b>Можно искать по:</b>\n"
         "- ISSN (например, <code>1234-5678</code>)\n"
         "- коду направления (например, <code>5.3.3</code>)\n"
         "- названию (например, <code>Физика</code>)\n\n"
-        "ℹ️ Вы можете просмотреть историю поиска через кнопку /history",
-        parse_mode="HTML"
+        "📝 Вы можете просмотреть <b>историю поиска</b> через кнопку /history\n\n"
+        "🧠 При помощи кнопки /recommend вы можете получить <b>персональные рекомендации журналов</b> на основе вашей истории поиска."
     )
+
+    bot.reply_to(message, text, parse_mode="HTML")
 
 
 # -------------------- MAIN QUERY HANDLER --------------------
@@ -99,7 +110,7 @@ def show_history(message):
     history = user_search_history.get(user_id, [])
 
     if not history:
-        bot.reply_to(message, "ℹ️ Ваша история поиска пуста.")
+        bot.reply_to(message, "🔍 Ваша история поиска пуста.")
         return
 
     response = "🕘 *История поиска:*\n\n"

@@ -33,7 +33,7 @@ def recommend_journals(bot, message, session):
     history = user_search_history.get(user_id, [])
 
     if not history:
-        bot.reply_to(message, "ℹ️ У вас ещё нет истории поиска. Сначала попробуйте поискать журналы.")
+        bot.reply_to(message, f"🗂 У вас ещё нет истории поиска. Для начала попробуйте поискать журналы.")
         return
 
     keywords = extract_keywords(history)
