@@ -6,6 +6,7 @@ import logging
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+from recommend import recommend_journals
 from models import Journal
 from utils import format_value
 from db import Session
@@ -118,6 +119,14 @@ def show_history(message):
         parse_mode="Markdown",
         reply_markup=markup
     )
+
+
+# -------------------- RECOMMENDATIONS --------------------
+
+@bot.message_handler(commands=['recommend'])
+def recommend_handler(message):
+    with Session() as session:
+        recommend_journals(bot, message, session)
 
 
 # -------------------- PAGINATION --------------------
